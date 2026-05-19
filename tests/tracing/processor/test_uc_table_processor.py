@@ -9,7 +9,7 @@ from mlflow.entities.trace_location import TraceLocationType, UCSchemaLocation
 from mlflow.entities.trace_state import TraceState
 from mlflow.environment_variables import MLFLOW_TRACKING_USERNAME
 from mlflow.exceptions import MlflowException
-from mlflow.tracing.constant import TraceMetadataKey
+from mlflow.tracing.constant import SpanAttributeKey, TokenUsageKey, TraceMetadataKey
 from mlflow.tracing.processor.uc_table import DatabricksUCTableSpanProcessor
 from mlflow.tracing.provider import _MLFLOW_TRACE_USER_DESTINATION
 from mlflow.tracing.trace_manager import InMemoryTraceManager
@@ -161,6 +161,59 @@ def test_on_end_does_not_set_user_session_attributes_when_missing():
 
     assert "user.id" not in otel_span.attributes
     assert "session.id" not in otel_span.attributes
+
+
+def test_on_end_sets_trace_level_token_usage_on_root_span():
+    # ML-65762: UC traces send TraceInfo and spans on independent paths. If the
+    # TraceInfo round-trip drops the aggregated mlflow.trace.tokenUsage value, the
+    # backend falls back to root-span scalar tokens (one LLM call). Copying the
+    # aggregate onto the root span attribute keeps it on the spans path so the
+    # value survives.
+    import json
+
+    trace_manager = InMemoryTraceManager.get_instance()
+    with mock.patch.object(trace_manager, "pop_trace", return_value=None):
+        with mlflow.start_span("agent") as root_span:
+            with mlflow.start_span("llm-1") as child1:
+                child1.set_attribute(
+                    SpanAttributeKey.CHAT_USAGE,
+                    {
+                        TokenUsageKey.INPUT_TOKENS: 10,
+                        TokenUsageKey.OUTPUT_TOKENS: 20,
+                        TokenUsageKey.TOTAL_TOKENS: 30,
+                    },
+                )
+            with mlflow.start_span("llm-2") as child2:
+                child2.set_attribute(
+                    SpanAttributeKey.CHAT_USAGE,
+                    {
+                        TokenUsageKey.INPUT_TOKENS: 5,
+                        TokenUsageKey.OUTPUT_TOKENS: 7,
+                        TokenUsageKey.TOTAL_TOKENS: 12,
+                    },
+                )
+            otel_root = root_span._span
+
+    processor = DatabricksUCTableSpanProcessor(span_exporter=mock.MagicMock())
+    processor.on_end(otel_root)
+
+    aggregated = json.loads(otel_root.attributes[SpanAttributeKey.TRACE_LEVEL_TOKEN_USAGE])
+    assert aggregated[TokenUsageKey.INPUT_TOKENS] == 15
+    assert aggregated[TokenUsageKey.OUTPUT_TOKENS] == 27
+    assert aggregated[TokenUsageKey.TOTAL_TOKENS] == 42
+
+
+def test_on_end_does_not_set_trace_level_token_usage_when_no_aggregation():
+    trace_manager = InMemoryTraceManager.get_instance()
+    with mock.patch.object(trace_manager, "pop_trace", return_value=None):
+        with mlflow.start_span("foo") as live_span:
+            otel_span = live_span._span
+
+    processor = DatabricksUCTableSpanProcessor(span_exporter=mock.MagicMock())
+    processor.on_end(otel_span)
+
+    assert SpanAttributeKey.TRACE_LEVEL_TOKEN_USAGE not in otel_span.attributes
+    assert SpanAttributeKey.TRACE_LEVEL_COST not in otel_span.attributes
 
 
 def test_trace_metadata_and_tags(active_uc_schema_destination):

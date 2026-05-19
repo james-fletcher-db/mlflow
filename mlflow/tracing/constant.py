@@ -133,6 +133,14 @@ class SpanAttributeKey:
     # https://opentelemetry.io/docs/specs/semconv/registry/attributes/session/#session-id
     USER_ID = "user.id"
     SESSION_ID = "session.id"
+    # Aggregated trace-level token usage and cost copied from trace_metadata onto the root
+    # span attributes by the UC table processor (see DatabricksUCTableSpanProcessor). On
+    # backends where TraceInfo and span data ingest on independent paths (UC), this lets
+    # the aggregated values survive when only one path lands. String values match the
+    # corresponding TraceMetadataKey entries so a single semantic key works in either
+    # namespace.
+    TRACE_LEVEL_TOKEN_USAGE = "mlflow.trace.tokenUsage"
+    TRACE_LEVEL_COST = "mlflow.trace.cost"
 
 
 class AssessmentMetadataKey:

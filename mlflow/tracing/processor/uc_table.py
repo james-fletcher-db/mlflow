@@ -10,8 +10,10 @@ from mlflow.entities.trace_state import TraceState
 from mlflow.exceptions import MlflowException
 from mlflow.tracing.constant import TRACE_SCHEMA_VERSION_KEY, SpanAttributeKey, TraceMetadataKey
 from mlflow.tracing.processor.base_mlflow import BaseMlflowSpanProcessor
+from mlflow.tracing.trace_manager import _Trace
 from mlflow.tracing.utils import (
     _bypass_attribute_guard,
+    encode_span_id,
     generate_trace_id_v4,
     get_mlflow_span_for_otel_span,
 )
@@ -96,3 +98,28 @@ class DatabricksUCTableSpanProcessor(BaseMlflowSpanProcessor):
                 if value := trace.info.trace_metadata.get(meta_key):
                     with _bypass_attribute_guard(mlflow_span._span):
                         mlflow_span._span.set_attribute(attr_key, value)
+
+    def _update_trace_info(self, trace: _Trace, root_span: OTelReadableSpan) -> None:
+        super()._update_trace_info(trace, root_span)
+        self._set_trace_level_aggregates_on_root_span(trace, root_span)
+
+    def _set_trace_level_aggregates_on_root_span(
+        self, trace: _Trace, root_span: OTelReadableSpan
+    ) -> None:
+        # UC trace ingest sends spans (OTLP) and TraceInfo (CreateTraceInfo v4) on
+        # independent paths. When the TraceInfo round-trip fails or is delayed, the
+        # aggregated trace-level token usage / cost in trace_metadata never reaches
+        # the backend, and the read path falls back to root-span scalar tokens
+        # alone -- which shows only the root LLM call's tokens. Copy the aggregated
+        # values onto the root span so they survive on the spans path. ML-65762.
+        mlflow_span_id = encode_span_id(root_span.context.span_id)
+        mlflow_span = trace.span_dict.get(mlflow_span_id)
+        if mlflow_span is None:
+            return
+        for meta_key, attr_key in (
+            (TraceMetadataKey.TOKEN_USAGE, SpanAttributeKey.TRACE_LEVEL_TOKEN_USAGE),
+            (TraceMetadataKey.COST, SpanAttributeKey.TRACE_LEVEL_COST),
+        ):
+            if value := trace.info.trace_metadata.get(meta_key):
+                with _bypass_attribute_guard(mlflow_span._span):
+                    mlflow_span._span.set_attribute(attr_key, value)
