@@ -668,6 +668,33 @@ def test_suppress_databricks_retry_after_secs_warnings():
         )
 
 
+def test_databricks_sdk_body_serialization_type_error_names_the_endpoint():
+    host_creds = MlflowHostCreds("http://example.com", use_databricks_sdk=True)
+
+    def mock_do(*args, **kwargs):
+        raise TypeError("object of type '_io.BytesIO' has no len()")
+
+    with mock.patch("mlflow.utils.rest_utils.get_workspace_client") as mock_get_workspace_client:
+        mock_get_workspace_client.return_value.api_client.do = mock_do
+        with pytest.raises(MlflowException, match=r"request to /endpoint failed") as exc_info:
+            http_request(host_creds, "/endpoint", "POST", data=b"payload")
+
+    assert "databricks.sdk" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, TypeError)
+
+
+def test_databricks_sdk_unrelated_type_error_propagates():
+    host_creds = MlflowHostCreds("http://example.com", use_databricks_sdk=True)
+
+    def mock_do(*args, **kwargs):
+        raise TypeError("unrelated")
+
+    with mock.patch("mlflow.utils.rest_utils.get_workspace_client") as mock_get_workspace_client:
+        mock_get_workspace_client.return_value.api_client.do = mock_do
+        with pytest.raises(TypeError, match="unrelated"):
+            http_request(host_creds, "/endpoint", "POST", data=b"payload")
+
+
 def test_databricks_sdk_retry_on_transient_errors():
     host_creds = MlflowHostCreds("http://example.com", use_databricks_sdk=True)
 

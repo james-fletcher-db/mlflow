@@ -193,16 +193,30 @@ def http_request(
                 warnings.filterwarnings(
                     "ignore", message=f".*{_DATABRICKS_SDK_RETRY_AFTER_SECS_DEPRECATION_WARNING}.*"
                 )
-                raw_response = ws_client.api_client.do(
-                    method=method,
-                    path=endpoint,
-                    headers=headers,
-                    raw=True,
-                    query=kwargs.get("params"),
-                    body=kwargs.get("json"),
-                    files=kwargs.get("files"),
-                    data=kwargs.get("data"),
-                )
+                try:
+                    raw_response = ws_client.api_client.do(
+                        method=method,
+                        path=endpoint,
+                        headers=headers,
+                        raw=True,
+                        query=kwargs.get("params"),
+                        body=kwargs.get("json"),
+                        files=kwargs.get("files"),
+                        data=kwargs.get("data"),
+                    )
+                except TypeError as e:
+                    # The SDK dumps the request body when it cannot parse a response as JSON, and
+                    # calling len() on a stream body raises here, discarding the API error it was
+                    # reporting. The response is unreachable from this frame, so name the endpoint
+                    # instead of surfacing a bare len() failure.
+                    if "has no len()" not in str(e):
+                        raise
+                    raise MlflowException(
+                        f"The Databricks API request to {endpoint} failed, but the Databricks SDK "
+                        f"could not report why: it raised '{e}' while formatting the error message "
+                        "for a response it could not parse as JSON. Enable debug logging for the "
+                        "`databricks.sdk` logger to see the response."
+                    ) from e
                 return raw_response["contents"]._response
 
         try:
